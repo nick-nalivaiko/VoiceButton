@@ -51,7 +51,8 @@ public sealed class OpenAiSpeechClient(HttpClient httpClient)
     public async Task<OpenAiSpeechStream> CreateSpeechStreamAsync(
         string text,
         VoiceButtonSettings settings,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? instructionsOverride = null)
     {
         var apiKey = GetApiKey()
             ?? throw new InvalidOperationException("OPENAI_API_KEY не задан. Вставь ключ в разделе Озвучка.");
@@ -62,7 +63,7 @@ public sealed class OpenAiSpeechClient(HttpClient httpClient)
             settings.Model,
             text,
             settings.Voice,
-            SupportsInstructions(settings.Model) ? settings.Instructions : null,
+            SupportsInstructions(settings.Model) ? instructionsOverride ?? settings.Instructions : null,
             settings.ResponseFormat,
             settings.Speed,
             "audio"));

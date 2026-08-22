@@ -20,9 +20,12 @@ public sealed class CodexLiveNarrationMonitor(
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(850);
     private static readonly TimeSpan SessionDisappearDelay = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan ParagraphStabilityDelay = TimeSpan.FromSeconds(2);
     private const double AssistantColumnLeftTolerance = 48;
     private const double AssistantColumnAnchorWidth = 96;
-    private const double InlineFragmentGap = 48;
+    private const double InlineFragmentGap = 64;
+    private const double WrappedLineGap = 9;
+    private const double ParagraphLeftTolerance = 56;
 
     private readonly object _gate = new();
     private CancellationTokenSource? _run;
@@ -32,6 +35,7 @@ public sealed class CodexLiveNarrationMonitor(
     private string? _trackedScopeKey;
     private List<string> _observedParagraphs = [];
     private readonly List<LiveNarrationParagraph> _publishedParagraphs = [];
+    private readonly Dictionary<int, StableParagraphCandidate> _stableParagraphCandidates = [];
     private DateTime _lastSessionSeenUtc;
     private bool _lastExtractionWasWorking;
     private string? _lastLoggedError;
@@ -234,6 +238,8 @@ public sealed class CodexLiveNarrationMonitor(
             _observedParagraphs = [.. paragraphs];
         }
 
+        UpdateStableParagraphCandidates(paragraphs, now);
+
         // While Codex is working, only a following paragraph proves that the current one is complete.
         // This deliberately trades a small delay for never narrating a paragraph in partial fragments.
         var publishCount = Math.Max(0, paragraphs.Count - 1);
@@ -245,6 +251,13 @@ public sealed class CodexLiveNarrationMonitor(
         var changed = false;
         for (var index = _publishedParagraphs.Count; index < publishCount; index++)
         {
+            if (extraction.IsWorking
+                && (!_stableParagraphCandidates.TryGetValue(index, out var candidate)
+                    || now - candidate.StableSinceUtc < ParagraphStabilityDelay))
+            {
+                break;
+            }
+
             _publishedParagraphs.Add(new LiveNarrationParagraph(index, paragraphs[index]));
             changed = true;
         }
@@ -261,6 +274,7 @@ public sealed class CodexLiveNarrationMonitor(
         _trackedScopeKey = scopeKey;
         _observedParagraphs.Clear();
         _publishedParagraphs.Clear();
+        _stableParagraphCandidates.Clear();
         _lastSessionSeenUtc = now;
         _lastExtractionWasWorking = isWorking;
         diagnosticsLog.Info(
@@ -275,6 +289,7 @@ public sealed class CodexLiveNarrationMonitor(
         _trackedScopeKey = null;
         _observedParagraphs.Clear();
         _publishedParagraphs.Clear();
+        _stableParagraphCandidates.Clear();
         _lastSessionSeenUtc = default;
         _lastExtractionWasWorking = false;
 
@@ -309,6 +324,23 @@ public sealed class CodexLiveNarrationMonitor(
         diagnosticsLog.Info(
             "Codex live narration snapshot",
             $"session={snapshot.SessionId}, paragraphs={snapshot.Paragraphs.Count}, working={snapshot.IsWorking}");
+    }
+
+    private void UpdateStableParagraphCandidates(IReadOnlyList<string> paragraphs, DateTime now)
+    {
+        for (var index = 0; index < paragraphs.Count; index++)
+        {
+            if (!_stableParagraphCandidates.TryGetValue(index, out var candidate)
+                || !string.Equals(candidate.Text, paragraphs[index], StringComparison.Ordinal))
+            {
+                _stableParagraphCandidates[index] = new StableParagraphCandidate(paragraphs[index], now);
+            }
+        }
+
+        foreach (var staleIndex in _stableParagraphCandidates.Keys.Where(index => index >= paragraphs.Count).ToArray())
+        {
+            _stableParagraphCandidates.Remove(staleIndex);
+        }
     }
 
     private static List<AutomationElement> FindMarkers(
@@ -471,17 +503,18 @@ public sealed class CodexLiveNarrationMonitor(
             }
         }
 
-        return MergeInlineFragments(fragments);
+        var paragraphs = MergeInlineFragments(fragments);
+        for (var index = 1; index < paragraphs.Count; index++)
+        {
+            paragraphs[index] = StripRepeatedSpeakerPrefix(paragraphs[index]);
+        }
+
+        return paragraphs.Where(value => !string.IsNullOrWhiteSpace(value)).ToList();
     }
 
     private static bool IsLeafTextElement(AutomationElement element, ControlType type)
     {
-        if (type == ControlType.Text)
-        {
-            return true;
-        }
-
-        if (type != ControlType.Document)
+        if (type != ControlType.Text && type != ControlType.Document)
         {
             return false;
         }
@@ -680,8 +713,8 @@ public sealed class CodexLiveNarrationMonitor(
 
             var verticalGap = current.Bounds.Top - previous.Bounds.Bottom;
             return verticalGap >= -2
-                && verticalGap <= 4
-                && (paragraphLeft == 0 || Math.Abs(current.Bounds.Left - paragraphLeft) <= 36);
+                && verticalGap <= WrappedLineGap
+                && (paragraphLeft == 0 || Math.Abs(current.Bounds.Left - paragraphLeft) <= ParagraphLeftTolerance);
         }
 
         return !string.IsNullOrWhiteSpace(previous.ContainerKey)
@@ -697,11 +730,9 @@ public sealed class CodexLiveNarrationMonitor(
 
         var verticalOverlap = current.Top <= previous.Bottom + 2
             && current.Bottom >= previous.Top - 2;
-        var horizontalGap = current.Left - previous.Right;
         return verticalOverlap
-            && current.Left >= previous.Left - 4
-            && horizontalGap >= -4
-            && horizontalGap <= InlineFragmentGap;
+            && current.Left <= previous.Right + InlineFragmentGap
+            && current.Right >= previous.Left - 4;
     }
 
     private static bool NeedsSpace(string previous, string current)
@@ -737,6 +768,7 @@ public sealed class CodexLiveNarrationMonitor(
         var text = value.Trim();
         return !LooksLikeActiveMarker(text)
             && !LooksLikeCompletedMarker(text)
+            && !IsSpeakerLabel(text)
             && !IsServiceActivityText(text)
             && !Regex.IsMatch(
                 text,
@@ -754,6 +786,23 @@ public sealed class CodexLiveNarrationMonitor(
 
         var segments = text.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return segments.Length > 0 && segments.All(IsServiceActivitySegment);
+    }
+
+    private static bool IsSpeakerLabel(string value)
+    {
+        return Regex.IsMatch(
+            value.Trim().TrimEnd(':', '-', '—'),
+            @"^(?:ChatGPT|Codex|Assistant|Ассистент|Помощник)(?:\s+(?:says|said|говорит|сказал|отвечает|ответил))?$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static string StripRepeatedSpeakerPrefix(string value)
+    {
+        return Regex.Replace(
+            value,
+            @"^(?:ChatGPT|Codex|Assistant|Ассистент|Помощник)\s*(?:(?:says|said|говорит|сказал|отвечает|ответил)\s*)?[:\-—]\s*",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant).TrimStart();
     }
 
     private static bool IsServiceActivitySegment(string value)
@@ -888,6 +937,8 @@ public sealed class CodexLiveNarrationMonitor(
         WpfRect Bounds,
         string ContainerKey,
         bool ForceBreakBefore);
+
+    private sealed record StableParagraphCandidate(string Text, DateTime StableSinceUtc);
 
     private sealed record LiveExtraction(string ScopeKey, List<string> Paragraphs, bool IsWorking);
 }

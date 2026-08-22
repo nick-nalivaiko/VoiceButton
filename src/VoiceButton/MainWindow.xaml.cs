@@ -21,6 +21,9 @@ public partial class MainWindow : Window
     private const string CodexMicHotkeyId = "CodexMic";
     private const string SendVoiceHotkeyId = "SendVoice";
     private const string ToggleLiveNarrationHotkeyId = "ToggleLiveNarration";
+    private const string LiveNarrationInstructions =
+        "Произнеси только переданный текст полностью, от первого до последнего слова, спокойно и естественно, сохраняя язык текста. " +
+        "Не добавляй вступления, названия говорящего, фразы вроде «ChatGPT говорит», комментарии или заключения.";
 
     private readonly VoiceButtonSettings _settings = new();
     private readonly AppSettingsStore _appSettingsStore = new();
@@ -1237,7 +1240,10 @@ public partial class MainWindow : Window
             var key = $"{snapshot.SessionId}:{paragraph.Index}";
             if (_handledLiveNarrationParagraphs.Add(key))
             {
-                _liveNarrationQueue.Enqueue(new LiveNarrationQueueItem(paragraph.Text));
+                _liveNarrationQueue.Enqueue(new LiveNarrationQueueItem(
+                    snapshot.SessionId,
+                    paragraph.Index,
+                    paragraph.Text));
             }
         }
 
@@ -1282,7 +1288,17 @@ public partial class MainWindow : Window
                 try
                 {
                     SetStatus(Tr("LiveNarrationSpeaking"), Tr("LiveNarrationParagraphDetail"), "#41D6A1", busy: true);
-                    await SpeakTextAsync(paragraph.Text, cancellationToken, keepAsSingleChunk: true);
+                    _diagnosticsLog.Info(
+                        "Codex live narration speech",
+                        $"session={paragraph.SessionId}, paragraph={paragraph.Index}, chars={paragraph.Text.Length}, state=started");
+                    await SpeakTextAsync(
+                        paragraph.Text,
+                        cancellationToken,
+                        keepAsSingleChunk: true,
+                        instructionsOverride: LiveNarrationInstructions);
+                    _diagnosticsLog.Info(
+                        "Codex live narration speech",
+                        $"session={paragraph.SessionId}, paragraph={paragraph.Index}, chars={paragraph.Text.Length}, state=completed");
                 }
                 catch (OperationCanceledException)
                 {
@@ -1796,9 +1812,15 @@ public partial class MainWindow : Window
     private async Task SpeakTextAsync(
         string text,
         CancellationToken cancellationToken,
-        bool keepAsSingleChunk = false)
+        bool keepAsSingleChunk = false,
+        string? instructionsOverride = null)
     {
         var speakableText = TtsTextSanitizer.Sanitize(text, TtsTextSanitizerOptions.FromSettings(_appSettings));
+        if (string.IsNullOrWhiteSpace(speakableText))
+        {
+            throw new InvalidOperationException("Нет текста для озвучки.");
+        }
+
         IReadOnlyList<string> chunks = keepAsSingleChunk
             ? [speakableText]
             : TextChunker.Split(speakableText, _settings.MaxChunkLength);
@@ -1807,7 +1829,8 @@ public partial class MainWindow : Window
             throw new InvalidOperationException("Нет текста для озвучки.");
         }
 
-        var speechConfiguration = $"{_settings.Model}|{_settings.Voice}|{_settings.Speed:F2}|{_settings.ResponseFormat}|{_settings.Instructions}";
+        var effectiveInstructions = instructionsOverride ?? _settings.Instructions;
+        var speechConfiguration = $"{_settings.Model}|{_settings.Voice}|{_settings.Speed:F2}|{_settings.ResponseFormat}|{effectiveInstructions}";
         if (string.Equals(_cachedSpeechText, speakableText, StringComparison.Ordinal)
             && string.Equals(_cachedSpeechConfiguration, speechConfiguration, StringComparison.Ordinal)
             && _cachedSpeechChunkCount == chunks.Count
@@ -1830,7 +1853,8 @@ public partial class MainWindow : Window
             await using var audio = await _speechClient.CreateSpeechStreamAsync(
                 chunks[index],
                 _settings,
-                cancellationToken);
+                cancellationToken,
+                instructionsOverride);
             using var capturedAudio = new CapturingReadStream(audio.AudioStream);
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -2260,5 +2284,5 @@ public partial class MainWindow : Window
 
     private sealed record LocalizedOption(string Id, string Label);
 
-    private sealed record LiveNarrationQueueItem(string Text);
+    private sealed record LiveNarrationQueueItem(string SessionId, int Index, string Text);
 }
