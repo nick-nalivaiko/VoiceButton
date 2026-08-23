@@ -12,5 +12,5 @@ public sealed class VoiceButtonSettings
 
     public string Instructions { get; set; } = "Говорить спокойно, естественно, на русском языке.";
 
-    public int MaxChunkLength { get; set; } = 3900;
+    public int MaxChunkLength { get; set; } = 3000;
 }

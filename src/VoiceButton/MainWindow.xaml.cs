@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private const string CodexMicHotkeyId = "CodexMic";
     private const string SendVoiceHotkeyId = "SendVoice";
     private const string ToggleLiveNarrationHotkeyId = "ToggleLiveNarration";
+    private const int SpeechChunkMaxAttempts = 3;
     private const string LiveNarrationInstructions =
         "Произнеси только переданный текст полностью, от первого до последнего слова, спокойно и естественно, сохраняя язык текста. " +
         "Не добавляй вступления, названия говорящего, фразы вроде «ChatGPT говорит», комментарии или заключения.";
@@ -1616,6 +1617,7 @@ public partial class MainWindow : Window
                 }
             }
 
+            _diagnosticsLog.Info("Latest answer capture", $"chars={text.Length}");
             await CancelCurrentSpeechRunAndWaitAsync();
             _playbackStopped = false;
             _floatingButtonWindow?.SetResumeAvailable(false);
@@ -1660,10 +1662,12 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException)
         {
+            _diagnosticsLog.Info("Completed answer speech", "state=canceled");
             SetStatus("Остановлено", "Озвучка прервана.", "#F9C74F", busy: false);
         }
         catch (Exception ex)
         {
+            _diagnosticsLog.Error("Completed answer speech", ex);
             SetStatus("Ошибка", ex.Message, "#F25F5C", busy: false);
         }
         finally
@@ -1853,6 +1857,14 @@ public partial class MainWindow : Window
 
         var effectiveInstructions = instructionsOverride ?? _settings.Instructions;
         var speechConfiguration = $"{_settings.Model}|{_settings.Voice}|{_settings.Speed:F2}|{_settings.ResponseFormat}|{effectiveInstructions}";
+        const string tableMarker = "[таблица скрыта]";
+        var lastTableMarker = speakableText.LastIndexOf(tableMarker, StringComparison.Ordinal);
+        var charsAfterLastTable = lastTableMarker < 0
+            ? -1
+            : speakableText.Length - lastTableMarker - tableMarker.Length;
+        _diagnosticsLog.Info(
+            "Speech pipeline",
+            $"sourceChars={text.Length}, sanitizedChars={speakableText.Length}, chunks={chunks.Count}, chunkChars={string.Join(',', chunks.Select(chunk => chunk.Length))}, charsAfterLastTable={charsAfterLastTable}, maxChunkChars={_settings.MaxChunkLength}, singleChunk={keepAsSingleChunk}");
         if (string.Equals(_cachedSpeechText, speakableText, StringComparison.Ordinal)
             && string.Equals(_cachedSpeechConfiguration, speechConfiguration, StringComparison.Ordinal)
             && _cachedSpeechChunkCount == chunks.Count
@@ -1870,34 +1882,94 @@ public partial class MainWindow : Window
 
         for (var index = 0; index < chunks.Count; index++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            SetStatus("Генерирую аудио", $"{index + 1}/{chunks.Count}", "#37D0F4", busy: true);
-            await using var audio = await _speechClient.CreateSpeechStreamAsync(
+            await PlaySpeechChunkWithRetryAsync(
                 chunks[index],
-                _settings,
+                index,
+                chunks.Count,
                 cancellationToken,
                 instructionsOverride);
-            using var capturedAudio = new CapturingReadStream(audio.AudioStream);
+        }
 
+        _diagnosticsLog.Info("Speech pipeline", $"state=completed, chunks={chunks.Count}");
+    }
+
+    private async Task PlaySpeechChunkWithRetryAsync(
+        string chunk,
+        int index,
+        int chunkCount,
+        CancellationToken cancellationToken,
+        string? instructionsOverride)
+    {
+        for (var attempt = 1; attempt <= SpeechChunkMaxAttempts; attempt++)
+        {
             cancellationToken.ThrowIfCancellationRequested();
-            SetStatus("Озвучиваю", $"{index + 1}/{chunks.Count}", "#41D6A1", busy: true);
+
             try
             {
+                _diagnosticsLog.Info(
+                    "Speech chunk",
+                    $"chunk={index + 1}/{chunkCount}, chars={chunk.Length}, attempt={attempt}, state=generating");
+                SetStatus(
+                    attempt == 1 ? "Генерирую аудио" : "Повторяю генерацию",
+                    $"{index + 1}/{chunkCount}",
+                    "#37D0F4",
+                    busy: true);
+
+                await using var audio = await _speechClient.CreateSpeechStreamAsync(
+                    chunk,
+                    _settings,
+                    cancellationToken,
+                    instructionsOverride);
+                using var capturedAudio = new CapturingReadStream(audio.AudioStream);
+
+                cancellationToken.ThrowIfCancellationRequested();
+                SetStatus("Озвучиваю", $"{index + 1}/{chunkCount}", "#41D6A1", busy: true);
                 await _audioPlaybackService.PlayStreamingAsync(
                     capturedAudio,
                     _settings.ResponseFormat,
                     cancellationToken,
                     startStopped: _playbackStopped);
-            }
-            finally
-            {
+
+                var capturedBytes = capturedAudio.ToArray();
                 if (capturedAudio.IsComplete && _cachedAudioChunks.Count == index)
                 {
-                    _cachedAudioChunks.Add(capturedAudio.ToArray());
+                    _cachedAudioChunks.Add(capturedBytes);
                 }
+
+                _diagnosticsLog.Info(
+                    "Speech chunk",
+                    $"chunk={index + 1}/{chunkCount}, chars={chunk.Length}, attempt={attempt}, capturedBytes={capturedBytes.Length}, state=completed");
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (attempt < SpeechChunkMaxAttempts)
+            {
+                _diagnosticsLog.Error(
+                    $"Speech chunk {index + 1}/{chunkCount} attempt {attempt}",
+                    ex);
+                _audioPlaybackService.Cancel();
+                SetStatus(
+                    "Повторяю часть аудио",
+                    $"{index + 1}/{chunkCount}, попытка {attempt + 1}/{SpeechChunkMaxAttempts}",
+                    "#F9C74F",
+                    busy: true);
+                await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _diagnosticsLog.Error(
+                    $"Speech chunk {index + 1}/{chunkCount} attempt {attempt}",
+                    ex);
+                throw new InvalidOperationException(
+                    $"Не удалось озвучить часть {index + 1} из {chunkCount} после {SpeechChunkMaxAttempts} попыток.",
+                    ex);
             }
         }
     }
+
     private async Task ReplayCachedAudioAsync(CancellationToken cancellationToken)
     {
         for (var index = 0; index < _cachedAudioChunks.Count; index++)
