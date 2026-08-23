@@ -13,6 +13,24 @@ public sealed class CodexWindowFinder(AppSettings? settings = null)
         return candidate?.Handle == foregroundWindow ? candidate : null;
     }
 
+    public AssistantAppKind? ClassifyWindow(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero || !NativeMethods.IsWindow(handle))
+        {
+            return null;
+        }
+
+        var title = NativeMethods.GetWindowTitle(handle);
+        _ = NativeMethods.GetWindowThreadProcessId(handle, out var processId);
+        if (processId == 0)
+        {
+            return null;
+        }
+
+        var (processName, processPath) = GetProcessInfo((int)processId);
+        return ClassifyApp(title, processName, processPath, GetKeywords());
+    }
+
     public CodexWindow? FindBestWindow(AssistantAppKind? preferredApp = null)
     {
         var currentProcessId = Environment.ProcessId;

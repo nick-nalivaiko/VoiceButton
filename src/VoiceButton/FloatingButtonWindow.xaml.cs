@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -21,7 +22,25 @@ public partial class FloatingButtonWindow : Window
     private const double DividerWidth = 1;
     private const double SeekZoneWidth = 186;
     private const double PlayedWaveformWidth = 135;
-    private static readonly TimeSpan TopmostRefreshInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ZOrderRefreshInterval = TimeSpan.FromMilliseconds(400);
+    private static readonly HashSet<string> SystemWindowsAbovePlayer = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "explorer",
+        "ShellExperienceHost",
+        "StartMenuExperienceHost"
+    };
+    private static readonly HashSet<string> ShellFlyoutsAbovePlayer = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "NotifyIconOverflowWindow",
+        "TopLevelWindowForOverflowXamlIsland"
+    };
+    private static readonly HashSet<string> IgnoredZOrderWindowClasses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Progman",
+        "WorkerW",
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd"
+    };
 
     private readonly Action _startVoiceInput;
     private readonly Action _resumePlayback;
@@ -33,7 +52,8 @@ public partial class FloatingButtonWindow : Window
     private readonly Action _toggleLiveNarration;
     private readonly Action<double, double> _savePosition;
     private readonly AppSettings _settings;
-    private readonly DispatcherTimer _topmostTimer;
+    private readonly CodexWindowFinder _codexWindowFinder;
+    private readonly DispatcherTimer _zOrderTimer;
 
     private PlaybackSnapshot _playbackSnapshot = PlaybackSnapshot.Inactive;
     private bool _isPlaybackActive;
@@ -54,6 +74,7 @@ public partial class FloatingButtonWindow : Window
     private double _compactRight;
     private double _compactTop;
     private IntPtr _windowHandle;
+    private bool _topmostApplied;
 
     public FloatingButtonWindow(
         Action startVoiceInput,
@@ -65,6 +86,7 @@ public partial class FloatingButtonWindow : Window
         Action stop,
         Action toggleLiveNarration,
         AppSettings settings,
+        CodexWindowFinder codexWindowFinder,
         Action<double, double> savePosition)
     {
         InitializeComponent();
@@ -77,12 +99,13 @@ public partial class FloatingButtonWindow : Window
         _stop = stop;
         _toggleLiveNarration = toggleLiveNarration;
         _settings = settings;
+        _codexWindowFinder = codexWindowFinder;
         _savePosition = savePosition;
-        _topmostTimer = new DispatcherTimer
+        _zOrderTimer = new DispatcherTimer
         {
-            Interval = TopmostRefreshInterval
+            Interval = ZOrderRefreshInterval
         };
-        _topmostTimer.Tick += TopmostTimer_Tick;
+        _zOrderTimer.Tick += ZOrderTimer_Tick;
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -92,8 +115,8 @@ public partial class FloatingButtonWindow : Window
         ApplyInitialPosition();
         UpdateContentClip();
         ApplyPlaybackVisual();
-        ReassertTopmost();
-        _topmostTimer.Start();
+        ApplyZOrderPolicy();
+        _zOrderTimer.Start();
     }
 
     private void ContentClip_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -117,7 +140,7 @@ public partial class FloatingButtonWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
-        _topmostTimer.Stop();
+        _zOrderTimer.Stop();
         base.OnClosed(e);
     }
 
@@ -130,12 +153,30 @@ public partial class FloatingButtonWindow : Window
             new IntPtr(currentStyle | NativeMethods.WsExNoActivate));
     }
 
-    private void TopmostTimer_Tick(object? sender, EventArgs e)
+    private void ZOrderTimer_Tick(object? sender, EventArgs e)
     {
-        ReassertTopmost();
+        ApplyZOrderPolicy();
     }
 
-    private void ReassertTopmost()
+    public void SetAlwaysOnTop(bool enabled)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.Invoke(() => SetAlwaysOnTop(enabled));
+            return;
+        }
+
+        _settings.FloatingButtonAlwaysOnTop = enabled;
+        if (!enabled)
+        {
+            SetTopmost(false);
+            PlaceAtBottom();
+        }
+
+        ApplyZOrderPolicy();
+    }
+
+    private void ApplyZOrderPolicy()
     {
         if (_windowHandle == IntPtr.Zero
             || !IsVisible
@@ -144,9 +185,54 @@ public partial class FloatingButtonWindow : Window
             return;
         }
 
+        var shellFlyout = FindVisibleShellFlyout();
+        if (shellFlyout != IntPtr.Zero)
+        {
+            SetTopmost(false);
+            PlaceBelow(shellFlyout);
+            return;
+        }
+
+        var topApplicationWindow = FindTopVisibleApplicationWindow();
+        if (topApplicationWindow == IntPtr.Zero)
+        {
+            SetTopmost(_settings.FloatingButtonAlwaysOnTop);
+            return;
+        }
+
+        if (IsSystemWindowAbovePlayer(topApplicationWindow))
+        {
+            SetTopmost(false);
+            PlaceBelow(topApplicationWindow);
+            return;
+        }
+
+        if (_settings.FloatingButtonAlwaysOnTop)
+        {
+            SetTopmost(true);
+            return;
+        }
+
+        SetTopmost(false);
+        if (_codexWindowFinder.ClassifyWindow(topApplicationWindow) is not null)
+        {
+            PlaceAtTop();
+            return;
+        }
+
+        PlaceBelow(topApplicationWindow);
+    }
+
+    private void SetTopmost(bool enabled)
+    {
+        if (_topmostApplied == enabled)
+        {
+            return;
+        }
+
         _ = NativeMethods.SetWindowPos(
             _windowHandle,
-            NativeMethods.HwndTopmost,
+            enabled ? NativeMethods.HwndTopmost : NativeMethods.HwndNotTopmost,
             0,
             0,
             0,
@@ -156,6 +242,147 @@ public partial class FloatingButtonWindow : Window
             | NativeMethods.SwpNoActivate
             | NativeMethods.SwpNoOwnerZOrder
             | NativeMethods.SwpNoSendChanging);
+        _topmostApplied = enabled;
+    }
+
+    private void PlaceAtTop()
+    {
+        _ = NativeMethods.SetWindowPos(
+            _windowHandle,
+            NativeMethods.HwndTop,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SwpNoMove
+            | NativeMethods.SwpNoSize
+            | NativeMethods.SwpNoActivate
+            | NativeMethods.SwpNoOwnerZOrder
+            | NativeMethods.SwpNoSendChanging);
+    }
+
+    private void PlaceAtBottom()
+    {
+        _ = NativeMethods.SetWindowPos(
+            _windowHandle,
+            NativeMethods.HwndBottom,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SwpNoMove
+            | NativeMethods.SwpNoSize
+            | NativeMethods.SwpNoActivate
+            | NativeMethods.SwpNoOwnerZOrder
+            | NativeMethods.SwpNoSendChanging);
+    }
+
+    private void PlaceBelow(IntPtr windowHandle)
+    {
+        if (windowHandle == IntPtr.Zero || !NativeMethods.IsWindow(windowHandle))
+        {
+            PlaceAtBottom();
+            return;
+        }
+
+        _ = NativeMethods.SetWindowPos(
+            _windowHandle,
+            windowHandle,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SwpNoMove
+            | NativeMethods.SwpNoSize
+            | NativeMethods.SwpNoActivate
+            | NativeMethods.SwpNoOwnerZOrder
+            | NativeMethods.SwpNoSendChanging);
+    }
+
+    private IntPtr FindTopVisibleApplicationWindow()
+    {
+        var topWindow = IntPtr.Zero;
+        _ = NativeMethods.EnumWindows((windowHandle, _) =>
+        {
+            if (IsZOrderApplicationWindow(windowHandle))
+            {
+                topWindow = windowHandle;
+                return false;
+            }
+
+            return true;
+        }, IntPtr.Zero);
+        return topWindow;
+    }
+
+    private bool IsZOrderApplicationWindow(IntPtr windowHandle)
+    {
+        if (windowHandle == IntPtr.Zero
+            || windowHandle == _windowHandle
+            || !NativeMethods.IsWindowVisible(windowHandle)
+            || NativeMethods.IsIconic(windowHandle)
+            || NativeMethods.IsWindowCloaked(windowHandle))
+        {
+            return false;
+        }
+
+        var windowClass = NativeMethods.GetWindowClassName(windowHandle);
+        if (IgnoredZOrderWindowClasses.Contains(windowClass)
+            || ShellFlyoutsAbovePlayer.Contains(windowClass))
+        {
+            return false;
+        }
+
+        var extendedStyle = NativeMethods.GetWindowLongPtr(windowHandle, NativeMethods.GwlExStyle).ToInt64();
+        if ((extendedStyle & NativeMethods.WsExNoActivate) != 0)
+        {
+            return false;
+        }
+
+        return NativeMethods.GetWindowRect(windowHandle, out var bounds)
+            && bounds.Width >= 80
+            && bounds.Height >= 40;
+    }
+
+    private static bool IsSystemWindowAbovePlayer(IntPtr windowHandle)
+    {
+        if (windowHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        _ = NativeMethods.GetWindowThreadProcessId(windowHandle, out var processId);
+        if (processId == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById((int)processId);
+            return SystemWindowsAbovePlayer.Contains(process.ProcessName);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static IntPtr FindVisibleShellFlyout()
+    {
+        var found = IntPtr.Zero;
+        _ = NativeMethods.EnumWindows((windowHandle, _) =>
+        {
+            if (NativeMethods.IsWindowVisible(windowHandle)
+                && ShellFlyoutsAbovePlayer.Contains(NativeMethods.GetWindowClassName(windowHandle)))
+            {
+                found = windowHandle;
+                return false;
+            }
+
+            return true;
+        }, IntPtr.Zero);
+        return found;
     }
 
     private void ButtonShell_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

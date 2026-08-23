@@ -611,7 +611,7 @@
                                 <TextBlock Style="{StaticResource RowIcon}" Text="&#xE921;" />
                                 <StackPanel Grid.Column="1">
                                     <TextBlock x:Name="MinimizeToTrayLabelText" Style="{StaticResource FieldLabel}" Text="Закрывать в трей" />
-                                    <TextBlock x:Name="MinimizeToTrayHintText" Style="{StaticResource FieldHint}" Text="Если включено, крестик прячет окно в трей. Верхняя кнопка всегда сворачивает его в панель задач." />
+                                    <TextBlock x:Name="MinimizeToTrayHintText" Style="{StaticResource FieldHint}" Text="Если включено, крестик прячет окно в трей. Кнопка «Свернуть» сворачивает окно в панель задач." />
                                 </StackPanel>
                                 <ToggleButton x:Name="MinimizeToTrayToggle" Grid.Column="2" Style="{StaticResource NeonToggle}" Checked="MinimizeToTrayToggle_Changed" Unchecked="MinimizeToTrayToggle_Changed" />
                             </Grid>

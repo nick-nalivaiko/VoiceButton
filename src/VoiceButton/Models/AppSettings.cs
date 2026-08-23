@@ -66,6 +66,8 @@ public sealed class AppSettings
 
     public bool ShowFloatingButton { get; set; } = true;
 
+    public bool FloatingButtonAlwaysOnTop { get; set; }
+
     public bool MinimizeToTray { get; set; } = true;
 
     public bool StartWithWindows { get; set; }

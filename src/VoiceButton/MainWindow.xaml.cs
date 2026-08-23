@@ -183,6 +183,8 @@ public partial class MainWindow : Window
     {
         _trayIconService = new TrayIconService(
             ShowFromTray,
+            _appSettings.FloatingButtonAlwaysOnTop,
+            SetFloatingButtonAlwaysOnTop,
             () => _ = SpeakLatestAnswerAsync(),
             StopCurrentRun,
             ExitApplication);
@@ -656,6 +658,26 @@ public partial class MainWindow : Window
         _floatingButtonWindow?.Close();
         _floatingButtonWindow = null;
         SetStatus("Плавающая кнопка", "Плавающая кнопка скрыта.", "#F9C74F", busy: false);
+    }
+
+    private void SetFloatingButtonAlwaysOnTop(bool enabled)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.Invoke(() => SetFloatingButtonAlwaysOnTop(enabled));
+            return;
+        }
+
+        _appSettings.FloatingButtonAlwaysOnTop = enabled;
+        _appSettingsStore.Save(_appSettings);
+        _floatingButtonWindow?.SetAlwaysOnTop(enabled);
+        SetStatus(
+            "Плавающая кнопка",
+            enabled
+                ? "Плеер будет поверх окон, кроме Проводника и системной панели трея."
+                : "Плеер остается над Codex и ChatGPT, а остальные окна могут быть выше.",
+            enabled ? "#37D0F4" : "#41D6A1",
+            busy: false);
     }
 
     private void MinimizeToTrayToggle_Changed(object sender, RoutedEventArgs e)
@@ -2200,6 +2222,7 @@ public partial class MainWindow : Window
             StopCurrentRun,
             ToggleLiveNarration,
             _appSettings,
+            _codexWindowFinder,
             SaveFloatingButtonPosition);
         _floatingButtonWindow.SetPlaybackSnapshot(_audioPlaybackService.CurrentSnapshot);
         _floatingButtonWindow.SetResumeAvailable(_playbackStopped && _currentRun is not null);

@@ -24,8 +24,8 @@ Voice Button is a compact Windows speech companion. It reads the latest **Codex*
 - **Long-answer support**: sanitizes and chunks long replies before sequential playback.
 - **Portable-friendly security**: API keys saved in the UI are stored in Windows Credential Manager, not inside the portable folder.
 - **Three interface languages**: English, Ukrainian, and Russian, selected from the Windows UI language on first launch.
-- **Tray support**: minimize to tray, optional Windows startup, remembered floating-button position, and local diagnostics.
-- **Stable desktop behavior**: only one instance can run per Windows session, and the floating control periodically restores its always-on-top state without taking focus.
+- **Tray support**: minimize to tray, optional Windows startup, remembered floating-button position, a persistent always-on-top toggle, and local diagnostics.
+- **Stable desktop behavior**: only one instance can run per Windows session. By default, the floating control stays above Codex and ChatGPT while other apps remain free to cover it; the tray toggle can keep it above regular apps, with File Explorer and Windows shell flyouts always taking priority.
 
 ## Floating controls
 

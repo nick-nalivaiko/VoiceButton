@@ -8,6 +8,7 @@ internal static class NativeMethods
     public const int SwRestore = 9;
     public const int WmHotkey = 0x0312;
     public const int GwlExStyle = -20;
+    public const long WsExToolWindow = 0x00000080L;
     public const long WsExNoActivate = 0x08000000L;
     public const uint ModAlt = 0x0001;
     public const uint ModControl = 0x0002;
@@ -32,6 +33,9 @@ internal static class NativeMethods
     public const ushort VkV = 0x56;
 
     public static readonly IntPtr HwndTopmost = new(-1);
+    public static readonly IntPtr HwndNotTopmost = new(-2);
+    public static readonly IntPtr HwndTop = IntPtr.Zero;
+    public static readonly IntPtr HwndBottom = new(1);
 
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
@@ -47,11 +51,24 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool IsIconic(IntPtr hWnd);
 
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out WindowRect rect);
+
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetWindowTextLength(IntPtr hWnd);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(
+        IntPtr hWnd,
+        int attribute,
+        out int value,
+        int valueSize);
 
     [DllImport("user32.dll")]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
@@ -151,6 +168,19 @@ internal static class NativeMethods
         public ushort ParameterHigh;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WindowRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+
+        public int Width => Right - Left;
+
+        public int Height => Bottom - Top;
+    }
+
     public static bool SendPasteShortcut()
     {
         var inputs = new[]
@@ -214,5 +244,24 @@ internal static class NativeMethods
         var builder = new StringBuilder(length + 1);
         _ = GetWindowText(hWnd, builder, builder.Capacity);
         return builder.ToString();
+    }
+
+    public static string GetWindowClassName(IntPtr hWnd)
+    {
+        var builder = new StringBuilder(256);
+        return GetClassName(hWnd, builder, builder.Capacity) > 0
+            ? builder.ToString()
+            : string.Empty;
+    }
+
+    public static bool IsWindowCloaked(IntPtr hWnd)
+    {
+        const int dwmWindowAttributeCloaked = 14;
+        return DwmGetWindowAttribute(
+            hWnd,
+            dwmWindowAttributeCloaked,
+            out var cloaked,
+            sizeof(int)) == 0
+            && cloaked != 0;
     }
 }

@@ -17,10 +17,16 @@ public sealed class TrayIconService : IDisposable
     private readonly StyledContextMenuStrip _menu;
     private readonly Forms.NotifyIcon _notifyIcon;
 
-    public TrayIconService(Action show, Action speak, Action stop, Action exit)
+    public TrayIconService(
+        Action show,
+        bool alwaysOnTop,
+        Action<bool> setAlwaysOnTop,
+        Action speak,
+        Action stop,
+        Action exit)
     {
         _menuFont = new Font("Segoe UI", 11.25f, FontStyle.Regular, GraphicsUnit.Point);
-        _menu = CreateMenu(_menuFont, show, speak, stop, exit);
+        _menu = CreateMenu(_menuFont, show, alwaysOnTop, setAlwaysOnTop, speak, stop, exit);
         _icon = LoadIcon();
         _notifyIcon = new Forms.NotifyIcon
         {
@@ -45,6 +51,8 @@ public sealed class TrayIconService : IDisposable
     private static StyledContextMenuStrip CreateMenu(
         Font font,
         Action show,
+        bool alwaysOnTop,
+        Action<bool> setAlwaysOnTop,
         Action speak,
         Action stop,
         Action exit)
@@ -63,6 +71,7 @@ public sealed class TrayIconService : IDisposable
         };
 
         menu.Items.Add(CreateMenuItem("Показать приложение", show, accent: true));
+        menu.Items.Add(CreateToggleMenuItem("Поверх остальных окон", alwaysOnTop, setAlwaysOnTop));
         menu.Items.Add(CreateMenuItem("Озвучить последний ответ", speak));
         menu.Items.Add(CreateMenuItem("Стоп", stop));
         menu.Items.Add(new Forms.ToolStripSeparator
@@ -88,6 +97,18 @@ public sealed class TrayIconService : IDisposable
             TextAlign = ContentAlignment.MiddleLeft
         };
         item.Click += (_, _) => action();
+        return item;
+    }
+
+    private static Forms.ToolStripMenuItem CreateToggleMenuItem(
+        string text,
+        bool isChecked,
+        Action<bool> onChanged)
+    {
+        var item = CreateMenuItem(text, () => { });
+        item.CheckOnClick = true;
+        item.Checked = isChecked;
+        item.Click += (_, _) => onChanged(item.Checked);
         return item;
     }
 
@@ -265,7 +286,9 @@ public sealed class TrayIconService : IDisposable
         protected override void OnRenderItemText(Forms.ToolStripItemTextRenderEventArgs e)
         {
             var color = e.Item.Enabled ? e.Item.ForeColor : Color.FromArgb(104, 124, 148);
-            var bounds = new Rectangle(16, 0, e.Item.Width - 32, e.Item.Height);
+            var toggleItem = e.Item as Forms.ToolStripMenuItem;
+            var hasToggle = toggleItem?.CheckOnClick == true;
+            var bounds = new Rectangle(16, 0, e.Item.Width - (hasToggle ? 58 : 32), e.Item.Height);
             Forms.TextRenderer.DrawText(
                 e.Graphics,
                 e.Text,
@@ -277,6 +300,26 @@ public sealed class TrayIconService : IDisposable
                     | Forms.TextFormatFlags.SingleLine
                     | Forms.TextFormatFlags.EndEllipsis
                     | Forms.TextFormatFlags.NoPrefix);
+
+            if (hasToggle && toggleItem!.Checked)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using var pen = new Pen(MenuAccent, 2.2f)
+                {
+                    StartCap = LineCap.Round,
+                    EndCap = LineCap.Round,
+                    LineJoin = LineJoin.Round
+                };
+                var centerY = e.Item.Height / 2f;
+                var right = e.Item.Width - 20f;
+                e.Graphics.DrawLines(
+                    pen,
+                    [
+                        new PointF(right - 10f, centerY),
+                        new PointF(right - 6f, centerY + 4f),
+                        new PointF(right + 2f, centerY - 5f)
+                    ]);
+            }
         }
 
         protected override void OnRenderSeparator(Forms.ToolStripSeparatorRenderEventArgs e)
