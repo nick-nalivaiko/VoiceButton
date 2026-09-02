@@ -176,6 +176,7 @@ public sealed class AudioPlaybackService(Dispatcher dispatcher, float outputVolu
         private static readonly TimeSpan MinimumStartupDelay = TimeSpan.FromSeconds(2);
         private static readonly TimeSpan MinimumBuffer = TimeSpan.FromSeconds(4.5);
         private static readonly TimeSpan ResumeBuffer = TimeSpan.FromSeconds(8);
+        private static readonly TimeSpan StreamStallTimeout = TimeSpan.FromSeconds(45);
 
         private readonly object _gate = new();
         private ProgressiveWaveProvider? _provider;
@@ -207,7 +208,7 @@ public sealed class AudioPlaybackService(Dispatcher dispatcher, float outputVolu
             var decodeTask = Task.Run(
                 () => DecodeMp3(audioStream, runCancellation.Token),
                 CancellationToken.None);
-            var monitorTask = MonitorPlaybackAsync(runCancellation.Token);
+            var monitorTask = MonitorPlaybackAsync(audioStream, runCancellation.Token);
 
             try
             {
@@ -506,18 +507,23 @@ public sealed class AudioPlaybackService(Dispatcher dispatcher, float outputVolu
             }
         }
 
-        private async Task MonitorPlaybackAsync(CancellationToken cancellationToken)
+        private async Task MonitorPlaybackAsync(Stream audioStream, CancellationToken cancellationToken)
         {
+            var lastDownloadProgressUtc = DateTime.UtcNow;
+            var lastDownloadedDuration = TimeSpan.Zero;
+
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
                 ProgressiveWaveProvider? provider;
                 Exception? decodeError;
+                bool downloadComplete;
                 lock (_gate)
                 {
                     provider = _provider;
                     decodeError = _decodeError;
+                    downloadComplete = _downloadComplete;
                 }
 
                 if (decodeError is not null)
@@ -527,10 +533,10 @@ public sealed class AudioPlaybackService(Dispatcher dispatcher, float outputVolu
 
                 if (provider is null)
                 {
-                    bool downloadComplete;
-                    lock (_gate)
+                    if (!downloadComplete && DateTime.UtcNow - lastDownloadProgressUtc >= StreamStallTimeout)
                     {
-                        downloadComplete = _downloadComplete;
+                        TryDisposeStream(audioStream);
+                        throw new TimeoutException("OpenAI не передал начало аудиопотока за 45 секунд.");
                     }
 
                     if (downloadComplete)
@@ -544,6 +550,17 @@ public sealed class AudioPlaybackService(Dispatcher dispatcher, float outputVolu
 
                 var output = EnsureOutput(provider);
                 var state = provider.GetState();
+                if (state.DownloadedDuration > lastDownloadedDuration)
+                {
+                    lastDownloadedDuration = state.DownloadedDuration;
+                    lastDownloadProgressUtc = DateTime.UtcNow;
+                }
+                else if (!downloadComplete && DateTime.UtcNow - lastDownloadProgressUtc >= StreamStallTimeout)
+                {
+                    TryDisposeStream(audioStream);
+                    throw new TimeoutException("Поток OpenAI TTS не передавал новые аудиоданные 45 секунд.");
+                }
+
                 bool startPlayback = false;
                 bool pauseForBuffer = false;
                 bool resumePlayback = false;

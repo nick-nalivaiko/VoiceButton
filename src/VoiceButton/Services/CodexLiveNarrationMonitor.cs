@@ -595,7 +595,7 @@ public sealed class CodexLiveNarrationMonitor(
     private static bool HasExcludedAncestor(AutomationElement element, AutomationElement scope)
     {
         var current = element;
-        for (var depth = 0; depth < 7; depth++)
+        for (var depth = 0; depth < 12; depth++)
         {
             AutomationElement? parent;
             try
@@ -619,7 +619,7 @@ public sealed class CodexLiveNarrationMonitor(
             }
 
             var parentName = SafeName(parent);
-            if (IsNarrationBoundary(parentName) || IsServiceActivityText(parentName))
+            if (IsNarrationBoundary(parentName) || IsServiceActivityContainer(parentName))
             {
                 return true;
             }
@@ -769,7 +769,7 @@ public sealed class CodexLiveNarrationMonitor(
         return !LooksLikeActiveMarker(text)
             && !LooksLikeCompletedMarker(text)
             && !IsSpeakerLabel(text)
-            && !IsServiceActivityText(text)
+            && !IsServiceActivityContainer(text)
             && !Regex.IsMatch(
                 text,
                 @"^(Awaiting approval|Computer Use|Background processes|Sources|Outputs|View all|Show more)$",
@@ -786,6 +786,20 @@ public sealed class CodexLiveNarrationMonitor(
 
         var segments = text.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return segments.Length > 0 && segments.All(IsServiceActivitySegment);
+    }
+
+    private static bool IsServiceActivityContainer(string value)
+    {
+        var text = NormalizeWhitespace(value).TrimEnd('>', '›', '…').Trim();
+        if (text.Length == 0 || IsServiceActivityText(text))
+        {
+            return text.Length > 0;
+        }
+
+        return Regex.IsMatch(
+            text,
+            @"^(?:(?:content|context)\s+(?:was\s+)?automatically\s+compacted|(?:run|ran|running)\s+(?:(?:a|the|\d+)\s+)?commands?)(?:\s|:|$)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private static bool IsSpeakerLabel(string value)

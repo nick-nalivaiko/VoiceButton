@@ -467,7 +467,7 @@ public partial class FloatingButtonWindow : Window
     private void CompactSpeakerZone_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
-        if (_isPlaybackActive || _dictationRecording || _dictationProcessing)
+        if (_dictationRecording || _dictationProcessing)
         {
             return;
         }

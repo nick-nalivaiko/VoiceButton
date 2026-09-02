@@ -22,6 +22,7 @@ public partial class MainWindow : Window
     private const string SendVoiceHotkeyId = "SendVoice";
     private const string ToggleLiveNarrationHotkeyId = "ToggleLiveNarration";
     private const int SpeechChunkMaxAttempts = 3;
+    private static readonly TimeSpan SpeechStreamStartTimeout = TimeSpan.FromSeconds(45);
     private const string LiveNarrationInstructions =
         "Произнеси только переданный текст полностью, от первого до последнего слова, спокойно и естественно, сохраняя язык текста. " +
         "Не добавляй вступления, названия говорящего, фразы вроде «ChatGPT говорит», комментарии или заключения.";
@@ -272,7 +273,7 @@ public partial class MainWindow : Window
 
     private void ClipboardButton_Click(object sender, RoutedEventArgs e)
     {
-        _ = SpeakClipboardAsync();
+        _ = SpeakClipboardFromFloatingAsync();
     }
 
     private void PreviewVoiceButton_Click(object sender, RoutedEventArgs e)
@@ -464,7 +465,7 @@ public partial class MainWindow : Window
                 _ = SpeakLatestAnswerAsync();
                 break;
             case ClipboardHotkeyId:
-                _ = SpeakClipboardAsync();
+                _ = SpeakClipboardFromFloatingAsync();
                 break;
             case CodexMicHotkeyId:
                 _ = StartVoiceInputOrWhileStoppedAsync();
@@ -1732,6 +1733,8 @@ public partial class MainWindow : Window
                 throw new InvalidOperationException("В clipboard нет текста для озвучки.");
             }
 
+            _diagnosticsLog.Info("Clipboard speech capture", $"chars={text.Length}, replacement=true");
+
             if (_currentRunIsLiveNarration)
             {
                 _liveNarrationQueue.Clear();
@@ -1778,6 +1781,8 @@ public partial class MainWindow : Window
             {
                 throw new InvalidOperationException("В clipboard нет текста для озвучки.");
             }
+
+            _diagnosticsLog.Info("Clipboard speech capture", $"chars={text.Length}, replacement=false");
 
             await SpeakTextAsync(text.Trim(), cancellationToken);
             SetReady();
@@ -1915,11 +1920,13 @@ public partial class MainWindow : Window
                     "#37D0F4",
                     busy: true);
 
-                await using var audio = await _speechClient.CreateSpeechStreamAsync(
+                await using var audio = await CreateSpeechStreamWithTimeoutAsync(
                     chunk,
-                    _settings,
                     cancellationToken,
                     instructionsOverride);
+                _diagnosticsLog.Info(
+                    "Speech chunk",
+                    $"chunk={index + 1}/{chunkCount}, chars={chunk.Length}, attempt={attempt}, state=stream-ready");
                 using var capturedAudio = new CapturingReadStream(audio.AudioStream);
 
                 cancellationToken.ThrowIfCancellationRequested();
@@ -1967,6 +1974,31 @@ public partial class MainWindow : Window
                     $"Не удалось озвучить часть {index + 1} из {chunkCount} после {SpeechChunkMaxAttempts} попыток.",
                     ex);
             }
+        }
+    }
+
+    private async Task<OpenAiSpeechStream> CreateSpeechStreamWithTimeoutAsync(
+        string text,
+        CancellationToken cancellationToken,
+        string? instructionsOverride = null)
+    {
+        using var requestRun = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        requestRun.CancelAfter(SpeechStreamStartTimeout);
+
+        try
+        {
+            return await _speechClient.CreateSpeechStreamAsync(
+                text,
+                _settings,
+                requestRun.Token,
+                instructionsOverride);
+        }
+        catch (OperationCanceledException ex)
+            when (!cancellationToken.IsCancellationRequested && requestRun.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"OpenAI не начал отдавать аудио за {SpeechStreamStartTimeout.TotalSeconds:0} секунд.",
+                ex);
         }
     }
 
