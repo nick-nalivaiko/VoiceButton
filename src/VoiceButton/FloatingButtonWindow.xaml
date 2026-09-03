@@ -275,31 +275,27 @@
                 Panel.ZIndex="20"
                 Width="22"
                 Height="22"
-                CornerRadius="11,11,8,4"
+                CornerRadius="11"
                 HorizontalAlignment="Right"
                 VerticalAlignment="Top"
-                Background="#2A1F0E"
-                BorderBrush="#F0A62E"
+                Background="#F9C74F"
+                BorderBrush="#FFE69A"
                 BorderThickness="1"
                 Visibility="Collapsed"
                 Cursor="Hand"
                 ToolTip="Озвучивать ход работы Codex"
                 MouseLeftButtonDown="LiveNarrationButton_MouseLeftButtonDown">
             <Grid>
-                <Rectangle x:Name="LiveNarrationGlow"
-                           Margin="2"
-                           RadiusX="6"
-                           RadiusY="6"
-                           Fill="#C97A16"
-                           Opacity="0.35" />
-                <Rectangle x:Name="LiveNarrationDot"
-                           Width="6"
-                           Height="6"
-                           RadiusX="2"
-                           RadiusY="2"
-                           Fill="#FFD166"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center" />
+                <Ellipse x:Name="LiveNarrationGlow"
+                         Margin="2"
+                         Fill="#FFD166"
+                         Opacity="0.5" />
+                <Ellipse x:Name="LiveNarrationDot"
+                         Width="6"
+                         Height="6"
+                         Fill="#071528"
+                         HorizontalAlignment="Center"
+                         VerticalAlignment="Center" />
             </Grid>
         </Border>
     </Grid>
